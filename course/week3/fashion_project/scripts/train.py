@@ -17,129 +17,132 @@ from fashion.paths import LOG_DIR, CONFIG_DIR
 
 
 class TrainFlow(FlowSpec):
-  r"""A MetaFlow that trains a image classifier to recognize images of fashion clothing,
-  and evaluates on the FashionMNIST test set.
+    r"""A MetaFlow that trains a image classifier to recognize images of fashion clothing,
+    and evaluates on the FashionMNIST test set.
 
-  Arguments
-  ---------
-  config (str, default: ./configs/train.json): path to a configuration file
-  augment (bool, default: False): whether to augment the training dataset or not
-  """
-  config_path = Parameter('config', help = 'path to config file', default = join(CONFIG_DIR, 'train.json'))
-  augment = Parameter('augment', help = 'augment training data', default = False)
-
-  @step
-  def start(self):
-    r"""Start node.
-    Set random seeds for reproducibility.
+    Arguments
+    ---------
+    config (str, default: ./configs/train.json): path to a configuration file
+    augment (bool, default: False): whether to augment the training dataset or not
     """
-    random.seed(42)
-    np.random.seed(42)
-    torch.manual_seed(42)
+    config_path = Parameter(
+        'config', help='path to config file', default=join(CONFIG_DIR, 'train.json'))
+    augment = Parameter('augment', help='augment training data', default=False)
 
-    self.next(self.init_system)
+    @step
+    def start(self):
+        r"""Start node.
+        Set random seeds for reproducibility.
+        """
+        random.seed(42)
+        np.random.seed(42)
+        torch.manual_seed(42)
 
-  @step
-  def init_system(self):
-    r"""Instantiates a data module, pytorch lightning module, 
-    and lightning trainer instance.
-    """
-    # configuration files contain all hyperparameters
-    config = load_config(self.config_path)
-    
-    if self.augment:
-      transform = transforms.Compose([
-        # ================================
-        # FILL ME OUT
-        # Any augmentations to apply to the training dataset with the goal of 
-        # enlarging the effective dataset size via "self supervision": an augmented
-        # data point maintains the same label.
-        # TODO
-        # ================================
-        transforms.ToTensor(),
-      ])
-    else:
-      transform = transforms.ToTensor()
+        self.next(self.init_system)
 
-    # a callback to save best model weights
-    checkpoint_callback = ModelCheckpoint(
-      dirpath = config.save_dir,
-      monitor = 'dev_loss',
-      mode = 'min',    # look for lowest `dev_loss`
-      save_top_k = 1,  # save top 1 checkpoints
-      verbose = True,
-    )
+    @step
+    def init_system(self):
+        r"""Instantiates a data module, pytorch lightning module, 
+        and lightning trainer instance.
+        """
+        # configuration files contain all hyperparameters
+        config = load_config(self.config_path)
 
-    trainer = Trainer(
-      max_epochs = config.optimizer.max_epochs,
-      callbacks = [checkpoint_callback],
-    )
+        if self.augment:
+            transform = transforms.Compose([
+                # ================================
+                # Data Augmentation Transforms
+                # ================================
+                transforms.RandomHorizontalFlip(),  # Randomly flip the image horizontally
+                # Randomly rotate the image by +/- 10 degrees
+                transforms.RandomRotation(10),
+                # Randomly crop the image and resize to 28x28
+                transforms.RandomResizedCrop(28, scale=(0.8, 1.0)),
+                transforms.ToTensor(),
+            ])
+        else:
+            transform = transforms.ToTensor()
 
-    # when we save these objects to a `step`, they will be available
-    # for use in the next step, through not steps after.
-    self.trainer = trainer
-    self.transform = transform
-    self.config = config
+        # a callback to save best model weights
+        checkpoint_callback = ModelCheckpoint(
+            dirpath=config.save_dir,
+            monitor='dev_loss',
+            mode='min',    # look for lowest `dev_loss`
+            save_top_k=1,  # save top 1 checkpoints
+            verbose=True,
+        )
 
-    self.next(self.train_model)
+        trainer = Trainer(
+            max_epochs=config.optimizer.max_epochs,
+            callbacks=[checkpoint_callback],
+        )
 
-  @step
-  def train_model(self):
-    """Calls `fit` on the trainer."""
+        # when we save these objects to a `step`, they will be available
+        # for use in the next step, through not steps after.
+        self.trainer = trainer
+        self.transform = transform
+        self.config = config
 
-    # a data module wraps around training, dev, and test datasets
-    dm = FashionDataModule(transform=self.transform)
+        self.next(self.train_model)
 
-    # a PyTorch Lightning system wraps around model logic
-    system = FashionClassifierSystem(self.config)
+    @step
+    def train_model(self):
+        """Calls `fit` on the trainer."""
 
-    # Call `fit` on the trainer with `system` and `dm`.
-    self.trainer.fit(system, dm)
+        # a data module wraps around training, dev, and test datasets
+        dm = FashionDataModule(transform=self.transform)
 
-    self.next(self.offline_test)
+        # a PyTorch Lightning system wraps around model logic
+        system = FashionClassifierSystem(self.config)
 
-  @step
-  def offline_test(self):
-    r"""Calls (offline) `test` on the trainer. Saves results to a log file."""
+        # Call `fit` on the trainer with `system` and `dm`.
+        self.trainer.fit(system, dm)
 
-    dm = FashionDataModule(transform=self.transform)
-    system = FashionClassifierSystem(self.config)
+        self.next(self.offline_test)
 
-    # Load the best checkpoint and compute results using `self.trainer.test`
-    self.trainer.test(system, dm, ckpt_path = 'best')
-    results = self.system.test_results
+    @step
+    def offline_test(self):
+        r"""Calls (offline) `test` on the trainer. Saves results to a log file."""
 
-    # print results to command line
-    pprint(results)
+        dm = FashionDataModule(transform=self.transform)
+        system = FashionClassifierSystem(self.config)
 
-    log_file = join(LOG_DIR, 'augment.json' if self.augment else 'results.json')
-    os.makedirs(os.path.dirname(log_file), exist_ok = True)
-    to_json(results, log_file)  # save to disk
+        # Load the best checkpoint and compute results using `self.trainer.test`
+        self.trainer.test(system, dm, ckpt_path='best')
+        results = self.system.test_results
 
-    self.next(self.end)
+        # print results to command line
+        pprint(results)
 
-  @step
-  def end(self):
-    """End node!"""
-    print('done! great work!')
+        log_file = join(
+            LOG_DIR, 'augment.json' if self.augment else 'results.json')
+        os.makedirs(os.path.dirname(log_file), exist_ok=True)
+        to_json(results, log_file)  # save to disk
+
+        self.next(self.end)
+
+    @step
+    def end(self):
+        """End node!"""
+        print('done! great work!')
 
 
 if __name__ == "__main__":
-  """
-  To validate this flow, run `python train.py`. To list
-  this flow, run `python train.py show`. To execute
-  this flow, run `python train.py run`.
+    """
+    To validate this flow, run `python train.py`. To list
+    this flow, run `python train.py show`. To execute
+    this flow, run `python train.py run`.
 
-  You may get PyLint errors from `numpy.random`. If so,
-  try adding the flag:
+    You may get PyLint errors from `numpy.random`. If so,
+    try adding the flag:
 
-    `python train.py --no-pylint run`
+      `python train.py --no-pylint run`
 
-  If you face a bug and the flow fails, you can continue
-  the flow at the point of failure:
+    If you face a bug and the flow fails, you can continue
+    the flow at the point of failure:
 
-    `python train.py resume`
-  
-  You can specify a run id as well.
-  """
-  flow = TrainFlow()
+      `python train.py resume`
+
+    You can specify a run id as well.
+    """
+    flow = TrainFlow()
